@@ -13,6 +13,23 @@
 3. Ensure the vacuum is on the same network as Home Assistant
 4. Try a different protocol version
 
+### IP Address Not Set
+
+**Symptoms**: The vacuum shows `error` with `IP Address not set`.
+
+The integration normally learns the vacuum's IP from its UDP broadcast. If that
+never arrives, it falls back to finding the vacuum by the MAC address reported
+by Eufy: it checks Home Assistant's ARP table, then probes the local subnets on
+TCP port 6668 and checks again. This is retried every 10 minutes and needs no
+extra internet access for the vacuum.
+
+**Solutions**:
+
+1. Make sure the vacuum is powered on and on the same layer-2 network (VLAN) as
+   Home Assistant, since ARP does not cross routers
+2. Enable debug logging and look for `Found ... by MAC address`
+3. Set the IP address manually in the integration options
+
 ### Invalid Local Key
 
 **Symptoms**: Authentication errors in the logs.

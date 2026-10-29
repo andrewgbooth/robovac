@@ -16,16 +16,26 @@
 """The Eufy Robovac integration."""
 from __future__ import annotations
 import logging
+from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform, CONF_IP_ADDRESS
+from homeassistant.const import (
+    CONF_IP_ADDRESS,
+    CONF_MAC,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
-from .const import CONF_VACS, DOMAIN
+from homeassistant.helpers.event import async_track_time_interval
+from .const import CONF_AUTODISCOVERY, CONF_VACS, DOMAIN
 
+from .mac_discovery import async_find_ips_by_mac
 from .tuyalocaldiscovery import TuyaLocalDiscovery
 
 PLATFORMS = [Platform.VACUUM, Platform.SENSOR, Platform.SELECT, Platform.SWITCH]
+MAC_LOOKUP_INTERVAL = timedelta(minutes=10)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -80,7 +90,18 @@ async def async_setup(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Eufy Robovac from a config entry."""
+    # Fill in missing IPs before the update listener exists, so the entry
+    # update does not trigger a reload of an entry that is still starting.
+    await _async_fill_missing_ips(hass, entry)
+
     entry.async_on_unload(entry.add_update_listener(update_listener))
+
+    async def _retry_missing_ips(_now: datetime) -> None:
+        await _async_fill_missing_ips(hass, entry)
+
+    entry.async_on_unload(
+        async_track_time_interval(hass, _retry_missing_ips, MAC_LOOKUP_INTERVAL)
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -91,6 +112,40 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok: bool = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     return unload_ok
+
+
+async def _async_fill_missing_ips(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Locate vacuums with no IP address by their MAC address on the LAN."""
+    vacuums = entry.data[CONF_VACS]
+    missing = {
+        vacuum_id: vacuum[CONF_MAC]
+        for vacuum_id, vacuum in vacuums.items()
+        if not vacuum.get(CONF_IP_ADDRESS)
+        and vacuum.get(CONF_MAC)
+        and vacuum.get(CONF_AUTODISCOVERY, True)
+    }
+    if not missing:
+        return
+
+    try:
+        found = await async_find_ips_by_mac(hass, missing.values())
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("MAC address lookup failed")
+        return
+
+    updated = deepcopy(dict(entry.data))
+    changed = False
+    for vacuum_id, mac in missing.items():
+        if mac in found:
+            updated[CONF_VACS][vacuum_id][CONF_IP_ADDRESS] = found[mac]
+            changed = True
+            _LOGGER.info(
+                "Found %s at %s by MAC address %s", vacuum_id, found[mac], mac
+            )
+        else:
+            _LOGGER.debug("Could not find %s (MAC %s) on the local network", vacuum_id, mac)
+    if changed:
+        hass.config_entries.async_update_entry(entry, data=updated)
 
 
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

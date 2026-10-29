@@ -33,6 +33,16 @@ def auto_enable_custom_integrations(enable_custom_integrations: object) -> objec
     yield
 
 
+@pytest.fixture(autouse=True)
+def no_mac_lookup() -> object:
+    """Keep entry setup from scanning the network for vacuums without an IP."""
+    with patch(
+        "custom_components.robovac.async_find_ips_by_mac",
+        AsyncMock(return_value={}),
+    ):
+        yield
+
+
 @pytest.fixture
 def mock_robovac() -> MagicMock:
     """Create a mock RoboVac device."""
